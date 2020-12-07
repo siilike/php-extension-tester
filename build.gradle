@@ -1,0 +1,144 @@
+
+def php =
+[
+	'8.0.0',
+	'7.4.13',
+// 	'7.3.25',
+];
+
+def phpConfigureArgs = [ "--enable-debug", "--with-zts" ]
+def phpMakeArgs = [ "-j12" ]
+
+def configureArgs = []
+def makeArgs = [ "-j12" ]
+
+task downloadPHP {}
+task compilePHP {}
+
+task copy {}
+task compile {}
+task phpize {}
+task test {}
+
+task prepare() {
+	doFirst {
+		new File("${buildDir}").mkdirs()
+		new File("${projectDir}/php-src").mkdirs()
+		new File("${projectDir}/php").mkdirs()
+	}
+}
+
+task clean {
+	doFirst {
+		buildDir.deleteDir()
+	}
+}
+
+php.each { version ->
+	def path = "${projectDir}/php/${version}/bin/:" + System.getenv('PATH')
+
+	task "downloadPHP-${version}"(type: Exec, dependsOn: prepare) {
+		enabled = !(new File("${projectDir}/php-src/${version}").exists())
+
+		inputs.property "version", version
+		outputs.file "${buildDir}/php-${version}.tar.gz"
+
+		workingDir buildDir
+
+		commandLine "wget"
+
+		args = [ "-c", "https://www.php.net/distributions/php-${version}.tar.gz" ]
+	}
+
+	task "unpack-${version}"(type: Exec, dependsOn: "downloadPHP-${version}") {
+		enabled = !(new File("${projectDir}/php-src/${version}").exists())
+
+		inputs.file "${buildDir}/php-${version}.tar.gz"
+		outputs.dir "${projectDir}/php-src/${version}"
+
+		workingDir "${projectDir}/php-src/"
+
+		commandLine "tar"
+
+		args = [ "-xf", "${buildDir}/php-${version}.tar.gz" ]
+
+		doLast {
+			new File("${projectDir}/php-src/php-${version}").renameTo("${projectDir}/php-src//${version}")
+		}
+	}
+
+	task "compilePHP-${version}"(dependsOn: "unpack-${version}") {
+		inputs.property "version", version
+		outputs.dir "${projectDir}/php-src/${version}"
+
+		doLast {
+			exec {
+				workingDir "${projectDir}/php-src/${version}"
+				commandLine "./configure"
+				args = [ "--prefix=" + new File("${projectDir}/php/${version}").absolutePath ] + phpConfigureArgs
+			}
+			exec {
+				workingDir "${projectDir}/php-src/${version}"
+				commandLine "make"
+				args = phpMakeArgs
+			}
+			exec {
+				workingDir "${projectDir}/php-src/${version}"
+				commandLine "make"
+				args = [ "install" ] + phpMakeArgs
+			}
+		}
+	}
+
+	task "copy-${version}"(type: Copy) {
+		from "${projectDir}/src"
+		into "${buildDir}/${version}"
+	}
+
+	task "phpize-${version}"(type: Exec, dependsOn: "copy-${version}") {
+		inputs.property "version", version
+		outputs.dir "${buildDir}/${version}"
+
+		environment "PATH", path
+		workingDir "${buildDir}/${version}"
+		commandLine "phpize"
+	}
+
+	task "compile-${version}"(dependsOn: "phpize-${version}") {
+		inputs.property "version", version
+		outputs.dir "${buildDir}/${version}"
+
+		doLast {
+			exec {
+				environment "PATH", path
+				workingDir "${buildDir}/${version}"
+				commandLine "./configure"
+				args = configureArgs
+			}
+			exec {
+				environment "PATH", path
+				workingDir "${buildDir}/${version}"
+				commandLine "make"
+				args = makeArgs
+			}
+		}
+	}
+
+	task "test-${version}"(type: Exec, dependsOn: "compile-${version}") {
+		inputs.dir "${buildDir}/${version}"
+		outputs.dir "${buildDir}/${version}/tests"
+
+		environment "PATH", path
+		environment "TEST_PHP_ARGS", "-q"
+		workingDir "${buildDir}/${version}"
+		commandLine "make"
+		args = [ "test" ]
+	}
+
+	downloadPHP.dependsOn "unpack-${version}"
+	compilePHP.dependsOn "compilePHP-${version}"
+	copy.dependsOn "copy-${version}"
+	phpize.dependsOn "phpize-${version}"
+	compile.dependsOn "compile-${version}"
+	test.dependsOn "test-${version}"
+}
